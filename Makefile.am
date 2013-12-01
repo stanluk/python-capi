@@ -13,10 +13,6 @@ c_capi_includes = \
 	include/capi/c_capi.pxd \
 	include/capi/__init__.py
 
-
-#c_capi_deps = \
-#	capi/capi.c_capi_actionslider.pxi
-
 MAINTAINERCLEANFILES = \
 	m4/libtool.m4 \
 	m4/lt~obsolete.m4 \
@@ -73,12 +69,13 @@ pyexeccapidir =  $(pyexecdir)/capi
 pyexeccapi_LTLIBRARIES = c_capi.la
 c_capi_la_LDFLAGS = -module -avoid-version
 c_capi_la_LIBTOOLFLAGS = --tag=disable-static
+c_capi_la_LIBADD = @CAPI_LIBS@
 c_capi_la_SOURCES = \
 	$(top_builddir)/capi/capi.c_capi.c \
 	$(top_builddir)/capi/capi.c_capi.h
 
-#pycapidir = $(pythondir)/capi
-#pycapi_PYTHON = capi/__init__.py capi/cursors.py
+pycapidir = $(pythondir)/capi
+pycapi_PYTHON = capi/__init__.py
 #
 #
 #.PHONY: doc doc-clean

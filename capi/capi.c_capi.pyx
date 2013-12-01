@@ -8,6 +8,27 @@ logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("capi")
 
 
+class TizenException(Exception):
+    pass
+
+
+class TizenAppException(TizenException):
+    TIZEN_APP_ERRORS = {
+        APP_ERROR_NONE: "Successful",
+        APP_ERROR_INVALID_PARAMETER: "Invalid parameter",
+        APP_ERROR_OUT_OF_MEMORY: "Out of memory",
+        APP_ERROR_INVALID_CONTEXT: "Invalid application context",
+        APP_ERROR_NO_SUCH_FILE: "No such file or directory",
+        APP_ERROR_ALREADY_RUNNING: "Application is already running"
+    }
+
+    def __init__(self, error):
+        self._error = error
+
+    def __str__(self):
+        return repr(TizenAppException.TIZEN_APP_ERRORS[self._error])
+
+
 cdef inline char* _fruni(s):
     cdef char* c_string
     if isinstance(s, unicode):
@@ -27,6 +48,8 @@ cdef bool on_create(void *cls):
 
 cdef class TizenEflApp:
 
+    def on_create(self):
+        return True
 
     def run(self):
         cdef int argc, i, arg_len
@@ -42,7 +65,9 @@ cdef class TizenEflApp:
             argv[i] = <char *>PyMem_Malloc(arg_len + 1)
             memcpy(argv[i], arg, arg_len + 1)
 
-        app_efl_main(&argc, &argv, &cbs, <void*>self)
+        i = app_efl_main(&argc, &argv, &cbs, <void*>self)
+        if i != 0:
+            raise TizenAppException(i)
 
     def exit(self):
         app_efl_exit()
