@@ -1,10 +1,17 @@
 from cpython cimport bool
 
-cdef extern from "string.h":
+cdef extern from "limits.h" nogil:
+    cdef int MAX_PATH "MAX_PATH"
+
+cdef extern from "stdlib.h" nogil:
+    void free(void *ptr)
+
+cdef extern from "string.h" nogil:
     void *memcpy(void *dst, void *src, int n)
     void *memset(void *mem, int val, size_t size)
 
 cdef extern from "app.h":
+
     ctypedef struct service_h:
         pass
 
@@ -35,6 +42,7 @@ cdef extern from "app.h":
 
     ctypedef struct app_event_callback_s:
         app_create_cb create
+        app_terminate_cb terminate
         app_pause_cb pause
         app_resume_cb resume
         app_service_cb service
@@ -45,5 +53,13 @@ cdef extern from "app.h":
         app_region_format_changed_cb region_format_changed
 
     void app_efl_exit()
-    int app_efl_main(int *argc, char ***argv, app_event_callback_s *callback, void *userd_data)
+    int app_efl_main(int *argc, char ***argv, app_event_callback_s *callback, void *userd_data) nogil
+    int app_get_package(char **package)
+    int app_get_id(char **id)
+    int app_get_name(char **name)
+    int app_get_version(char **version)
+    char* app_get_resource(const char *resource, char *buffer, int size)
+    char* app_get_data_directory(char *buffer, int size)
+    app_device_orientation_e app_get_device_orientation()
+    void app_set_reclaiming_system_cache_on_pause(bool enable)
 
