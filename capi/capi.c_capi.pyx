@@ -8,15 +8,15 @@ logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("capi")
 
 
-class TizenException(Exception):
+class TizenError(Exception):
     def __init__(self, msg):
         self.message = msg
 
     def __str__(self):
-        return self.message
+        return repr(self.message)
 
 
-class TizenAppException(TizenException):
+class TizenAppError(TizenError):
     TIZEN_APP_ERRORS = {
         APP_ERROR_NONE: "Successful",
         APP_ERROR_INVALID_PARAMETER: "Invalid parameter",
@@ -27,8 +27,8 @@ class TizenAppException(TizenException):
     }
 
     def __init__(self, error):
+        TizenError.__init__(self, TizenAppError.TIZEN_APP_ERRORS[error])
         self.error_code = error
-        self.message = TizenAppException.TIZEN_APP_ERRORS[self.error_code]
 
 
 cdef inline char* _fruni(s):
@@ -47,60 +47,112 @@ cdef inline char* _fruni(s):
 
 cdef bool on_create(void *cls) with gil:
     cdef object inst = <object>cls
-    return bool(inst.create())
+    try:
+        inst.create()
+    except:
+        inst._set_exception()
+        inst.exit()
+        return False
+    return True
 
 
 cdef void on_pause(void *cls) with gil:
     cdef object inst = <object>cls
-    inst.pause()
+    try:
+        inst.pause()
+    except:
+        inst._set_exception()
+        inst.exit()
 
 
 cdef void on_resume(void *cls) with gil:
     cdef object inst = <object>cls
-    inst.resume()
+    try:
+        inst.resume()
+    except:
+        inst._set_exception()
+        inst.exit()
 
 
 cdef void on_terminate(void *cls) with gil:
     cdef object inst = <object>cls
-    inst.terminate()
+    try:
+        inst.terminate()
+    except:
+        inst._set_exception()
+        inst.exit()
 
 
 cdef void on_service(service_h service, void *cls) with gil:
     cdef object inst = <object>cls
-    inst.service()
+    try:
+        inst.service(service)
+    except:
+        inst._set_exception()
+        inst.exit()
 
 
 cdef void on_low_memory(void *cls) with gil:
     cdef object inst = <object>cls
-    inst.low_memory()
+    try:
+        inst.low_memory()
+    except:
+        inst._set_exception()
+        inst.exit()
 
 
 cdef void on_low_battery(void *cls) with gil:
     cdef object inst = <object>cls
-    inst.low_battery()
+    try:
+        inst.low_battery()
+    except:
+        inst._set_exception()
+        inst.exit()
 
 
 cdef void on_device_orientation_change(app_device_orientation_e orient, void *cls) with gil:
     cdef object inst = <object>cls
-    inst.app_device_orientation_change(orient)
+    try:
+        inst.app_device_orientation_change(orient)
+    except:
+        inst._set_exception()
+        inst.exit()
 
 
 cdef void on_language_changed(void *cls) with gil:
     cdef object inst = <object>cls
-    inst.language_changed()
+    try:
+        inst.language_changed()
+    except:
+        inst._set_exception()
+        inst.exit()
 
 
 cdef void on_region_format_changed(void *cls) with gil:
     cdef object inst = <object>cls
-    inst.region_format_changed()
+    try:
+        inst.region_format_changed()
+    except:
+        inst._set_exception()
+        inst.exit()
 
 
 cdef class TizenEflApp:
     def __init__(self):
-        pass
+        self._exc = None
+
+    def _set_exception(self):
+        exc = sys.exc_info()
+        if exc != (None, None, None):
+            self._exc = exc
+
+    def _raise_exception(self):
+        if self._exc:
+            raise self._exc[0], self._exc[1], self._exc[2]
 
     def create(self):
-        return True
+        raise NotImplementedError("TizenEflApp should at least implement "
+                                  "create callback.")
 
     def pause(self):
         pass
@@ -153,9 +205,12 @@ cdef class TizenEflApp:
 
         with nogil:
             err = app_efl_main(&argc, &argv, &cbs, <void*>self)
+        # since all python exceptions are raised in
+        # app_efl_main function execptions should be reraised.
+        self._raise_exception()
 
         if err != APP_ERROR_NONE:
-            raise TizenAppException(err)
+            raise TizenAppError(err)
 
     def exit(self):
         app_efl_exit()
@@ -166,7 +221,7 @@ cdef class TizenEflApp:
         cdef char *package
         cdef int err = app_get_package(&package)
         if err != APP_ERROR_NONE:
-            raise TizenAppException(err)
+            raise TizenAppError(err)
         try:
             pypackage = package
         finally:
@@ -179,7 +234,7 @@ cdef class TizenEflApp:
         cdef char *id
         cdef int err = app_get_id(&id)
         if err != APP_ERROR_NONE:
-            raise TizenAppException(err)
+            raise TizenAppError(err)
         try:
             pyid = id
         finally:
@@ -192,7 +247,7 @@ cdef class TizenEflApp:
         cdef char *cstr
         cdef int err = app_get_id(&cstr)
         if err != APP_ERROR_NONE:
-            raise TizenAppException(err)
+            raise TizenAppError(err)
         try:
             pystr = cstr
         finally:
@@ -205,7 +260,7 @@ cdef class TizenEflApp:
         cdef char *cstr
         cdef int err = app_get_version(&cstr)
         if err != APP_ERROR_NONE:
-            raise TizenAppException(err)
+            raise TizenAppError(err)
         try:
             pystr = cstr
         finally:
@@ -219,7 +274,7 @@ cdef class TizenEflApp:
         cdef char *res_conv = _fruni(resource)
         cdef char *res = app_get_resource(res_conv, cstr, sizeof(cstr))
         if res == NULL:
-            raise TizenException("Getting '%s' resource path failed." % resource)
+            raise TizenError("Getting '%s' resource path failed." % resource)
         pystr = cstr
         return pystr
 
@@ -230,7 +285,7 @@ cdef class TizenEflApp:
         cdef char cstr[1024]
         cdef char *res = app_get_data_directory(cstr, sizeof(cstr))
         if res == NULL:
-            raise TizenException("Getting data directory failed.")
+            raise TizenError("Getting data directory failed.")
         pystr = cstr
         return pystr
 
@@ -240,4 +295,3 @@ cdef class TizenEflApp:
 
     def reclaim_system_cache(self, val):
         app_set_reclaiming_system_cache_on_pause(bool(val))
-

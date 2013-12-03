@@ -1,8 +1,5 @@
 from cpython cimport bool
 
-cdef extern from "limits.h" nogil:
-    cdef int MAX_PATH "MAX_PATH"
-
 cdef extern from "stdlib.h" nogil:
     void free(void *ptr)
 
