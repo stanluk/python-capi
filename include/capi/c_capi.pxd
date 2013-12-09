@@ -20,6 +20,21 @@ cdef extern from "app.h":
         APP_ERROR_NO_SUCH_FILE
         APP_ERROR_ALREADY_RUNNING
 
+    ctypedef enum service_error_e:
+        SERVICE_ERROR_NONE
+        SERVICE_ERROR_INVALID_PARAMETER
+        SERVICE_ERROR_OUT_OF_MEMORY
+        SERVICE_ERROR_APP_NOT_FOUND
+        SERVICE_ERROR_KEY_NOT_FOUND
+        SERVICE_ERROR_KEY_REJECTED
+        SERVICE_ERROR_INVALID_DATA_TYPE
+        SERVICE_ERROR_LAUNCH_REJECTED
+
+    ctypedef enum service_result_e:
+        SERVICE_RESULT_SUCCEEDED
+        SERVICE_RESULT_FAILED
+        SERVICE_RESULT_CANCELED
+
     ctypedef enum app_device_orientation_e:
         APP_DEVICE_ORIENTATION
         APP_DEVICE_ORIENTATION_90
@@ -60,3 +75,29 @@ cdef extern from "app.h":
     app_device_orientation_e app_get_device_orientation()
     void app_set_reclaiming_system_cache_on_pause(bool enable)
 
+
+cdef extern from "app_service.h":
+    ctypedef enum service_result_e:
+        SERVICE_RESULT_SUCCEEDED
+        SERVICE_RESULT_FAILED
+        SERVICE_RESULT_CANCELED
+
+    ctypedef bool (*service_app_matched_cb)(service_h service, const char *appid, void *user_data)
+    ctypedef void (*service_reply_cb)(service_h request, service_h reply, service_result_e result, void *user_data)
+    int service_set_app_id(service_h service, const char *app_id)
+    int service_get_app_id(service_h service, char **app_id)
+    int service_set_category(service_h service, const char *category)
+    int service_get_category(service_h service, char **category)
+    int service_get_mime(service_h service, char **mime)
+    int service_set_mime(service_h service, const char *mime)
+    int service_set_operation(service_h service, const char *operation)
+    int service_get_operation(service_h service, char **operation)
+    int service_get_uri(service_h service, char **uri)
+    int service_set_uri(service_h service, const char *uri)
+    int service_set_window(service_h service, unsigned int id)
+    int service_get_window(service_h service, unsigned int *id)
+    int service_get_caller(service_h service, char **id)
+    int service_is_reply_requested(service_h service, int *requested)
+    int service_reply_to_launch_request(service_h reply, service_h request, service_result_e result)
+    int service_send_launch_request(service_h service, service_reply_cb callback, void *user_data)
+    int service_foreach_app_matched(service_h service, service_app_matched_cb callback, void *user_data)

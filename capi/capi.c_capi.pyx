@@ -31,6 +31,23 @@ class TizenAppError(TizenError):
         self.error_code = error
 
 
+class TizenServiceError(TizenError):
+    TIZEN_SERVICE_ERRORS = {
+        SERVICE_ERROR_NONE: "Successful",
+        SERVICE_ERROR_INVALID_PARAMETER: "Invalid parameter",
+        SERVICE_ERROR_OUT_OF_MEMORY: "Out of memory",
+        SERVICE_ERROR_APP_NOT_FOUND: "The application was not found",
+        SERVICE_ERROR_KEY_NOT_FOUND: "Specified key not found",
+        SERVICE_ERROR_KEY_REJECTED: "Not available key",
+        SERVICE_ERROR_INVALID_DATA_TYPE: "Invalid data type",
+        SERVICE_ERROR_LAUNCH_REJECTED: "Internal launch erro",
+    }
+
+    def __init__(self, error):
+        TizenError.__init__(self, TizenAppError.TIZEN_APP_ERRORS[error])
+        self.error_code = error
+
+
 cdef inline char* _fruni(s):
     cdef char* c_string
     if isinstance(s, unicode):
@@ -295,3 +312,180 @@ cdef class TizenEflApp:
 
     def reclaim_system_cache(self, val):
         app_set_reclaiming_system_cache_on_pause(bool(val))
+
+
+cdef bool _service_math_cb(service_h s, const char *app_id, void *data):
+    cdef bytes aid = app_id
+    cdef object all_ids = <object>data
+    all_ids.append(aid)
+    return True  # get next matching app_id
+
+
+cdef class Service:
+    def __init__(self, handle):
+        self._handle = handle
+
+    def __del__(self):
+        # del handle
+        pass
+
+    @property
+    def app_id(self):
+        cdef bytes pystr
+        cdef char *cstr
+        cdef int err = service_get_app_id(self._service, &cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        try:
+            pystr = cstr
+        finally:
+            free(cstr)
+        return pystr
+
+    @app_id.setter
+    def app_id(self, val):
+        cdef char *cstr = _fruni(val)
+        cdef err = service_set_app_id(self._service, cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+
+    @property
+    def category(self):
+        cdef bytes pystr
+        cdef char *cstr
+        cdef int err = service_get_category(self._service, &cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        try:
+            pystr = cstr
+        finally:
+            free(cstr)
+        return pystr
+
+    @category.setter
+    def category(self, val):
+        cdef char *cstr = _fruni(val)
+        cdef err = service_set_app_id(self._service, cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+
+    @property
+    def mime(self):
+        cdef bytes pystr
+        cdef char *cstr
+        cdef int err = service_get_mime(self._service, &cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        try:
+            pystr = cstr
+        finally:
+            free(cstr)
+        return pystr
+
+    @mime.setter
+    def mime(self, val):
+        cdef char *cstr = _fruni(val)
+        cdef err = service_set_mime(self._service, cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+
+    @property
+    def operation(self):
+        cdef bytes pystr
+        cdef char *cstr
+        cdef int err = service_get_operation(self._service, &cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        try:
+            pystr = cstr
+        finally:
+            free(cstr)
+        return pystr
+
+    @operation.setter
+    def operation(self, val):
+        cdef char *cstr = _fruni(val)
+        cdef err = service_set_operation(self._service, cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+
+    @property
+    def uri(self):
+        cdef bytes pystr
+        cdef char *cstr
+        cdef int err = service_get_uri(self._service, &cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        try:
+            pystr = cstr
+        finally:
+            free(cstr)
+        return pystr
+
+    @uri.setter
+    def uri(self, val):
+        cdef char *cstr = _fruni(val)
+        cdef err = service_set_uri(self._service, cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+
+    @property
+    def window(self):
+        cdef unsigned int cint
+        cdef int err = service_get_window(self._service, &cint)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        return int(cint)
+
+    @window.setter
+    def window(self, val):
+        cdef unsigned int cint = int(val)
+        cdef err = service_set_window(self._service, cint)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+
+    @property
+    def caller(self):
+        cdef bytes pystr
+        cdef char *cstr
+        cdef int err = service_get_caller(self._service, &cstr)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        try:
+            pystr = cstr
+        finally:
+            free(cstr)
+        return pystr
+
+    def is_reply_requested(self):
+        cdef int ret
+        cdef int err = service_is_reply_requested(self._service, &ret)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        return ret
+
+    @property
+    def data(self):
+        pass
+
+    @data.setter
+    def data(self, value):
+        pass
+
+
+    def get_matching_apps(self):
+        ret = []
+        cdef int err = service_foreach_app_matched(self._service, _service_math_cb, <void*>ret)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        return ret
+
+    def replay(self, value):
+        cdef int err = service_reply_to_launch_request(self._service, self._request, value)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+
+#    def launch(self):
+#        cdef int err = service_send_launch_request(self._service, 
+#        if err != APP_ERROR_NONE:
+#            raise TizenServiceError(err)
