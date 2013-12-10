@@ -1,6 +1,7 @@
 from cpython cimport bool
 
 cdef extern from "stdlib.h" nogil:
+    void *malloc(size_t size)
     void free(void *ptr)
 
 cdef extern from "string.h" nogil:
@@ -84,6 +85,9 @@ cdef extern from "app_service.h":
 
     ctypedef bool (*service_app_matched_cb)(service_h service, const char *appid, void *user_data)
     ctypedef void (*service_reply_cb)(service_h request, service_h reply, service_result_e result, void *user_data)
+
+    ctypedef bool (*service_extra_data_cb)(service_h service, const char *key, void *user_data)
+
     int service_set_app_id(service_h service, const char *app_id)
     int service_get_app_id(service_h service, char **app_id)
     int service_set_category(service_h service, const char *category)
@@ -101,3 +105,13 @@ cdef extern from "app_service.h":
     int service_reply_to_launch_request(service_h reply, service_h request, service_result_e result)
     int service_send_launch_request(service_h service, service_reply_cb callback, void *user_data)
     int service_foreach_app_matched(service_h service, service_app_matched_cb callback, void *user_data)
+    int service_foreach_extra_data(service_h service, service_extra_data_cb callback, void *user_data)
+    int service_is_extra_data_array(service_h service, const char *key, int *array)
+    int service_get_extra_data_array(service_h service, const char *key, char ***value, int *length)
+    int service_get_extra_data(service_h service, const char *key, char **value)
+    int service_add_extra_data(service_h service, const char *key, const char *value)
+    int service_add_extra_data_array(service_h service, const char *key, const char* value[], int length)
+    int service_remove_extra_data(service_h service, const char *key)
+    int service_create(service_h *service)
+    int service_destroy(service_h service)
+    int service_clone(service_h *clone, service_h service)

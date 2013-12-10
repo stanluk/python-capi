@@ -103,7 +103,8 @@ cdef void on_terminate(void *cls) with gil:
 cdef void on_service(service_h service, void *cls) with gil:
     cdef object inst = <object>cls
     try:
-        inst.service(service)
+        srv = ServiceRequest(handle=service)
+        inst.service(srv)
     except:
         inst._set_exception()
         inst.exit()
@@ -321,13 +322,112 @@ cdef bool _service_math_cb(service_h s, const char *app_id, void *data):
     return True  # get next matching app_id
 
 
-cdef class Service:
-    def __init__(self, handle):
-        self._handle = handle
+cdef bool _service_foreach_key_del(service_h handle, const char *key, void *data):
+    cdef err = service_remove_extra_data(handle, key)
+    if err != SERVICE_ERROR_NONE:
+        return False
+    return True
+
+cdef bool _service_foreach_key(service_h handle, const char *key, void *data):
+    cdef int is_extra_data
+    cdef int err
+    cdef bytes pkey = key
+    cdef bytes val
+    cdef object service_data = <object>data
+    cdef object value = None
+    cdef int length
+    cdef char *values
+    cdef char **avalues
+    err = service_is_extra_data_array(handle, key, &is_extra_data);
+    if err != SERVICE_ERROR_NONE:
+        return False
+
+    if is_extra_data:
+        value = []
+        err = service_get_extra_data_array(handle, key, &avalues, &length)
+        if err != SERVICE_ERROR_NONE:
+            return False
+        for i in range(length):
+            try:
+                val = avalues[i]
+                value.append(val)
+            except:
+                return False
+            finally:
+                free(avalues[i])
+        free(avalues)
+    else:
+        err = service_get_extra_data(handle, key, &values)
+        if err != SERVICE_ERROR_NONE:
+            return False
+        try:
+            val = value
+        except:
+            return False
+        finally:
+            free(values)
+
+    service_data[pkey] = value
+    return True
+
+
+cdef class ServiceAnswer(Service):
+    def __init__(self, request):
+        Service.__init__(self)
+        cdef service_h service
+        if not isinstance(request, Service):
+            raise TizenError("Invalid type: request Service instance")
+        err = service_clone(&service, <service_h>request._service)
+        self._request = service
+        if err != SERVICE_ERROR_NONE:
+            raise TizenServiceError(err)
 
     def __del__(self):
-        # del handle
+        Service.__del__(self)
+        service_destroy(self._request)
+
+    def send(self, value):
+        cdef int err = service_reply_to_launch_request(self._service, self._request, value)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+
+
+cdef void _service_reply_cb(service_h request, service_h reply, service_result_e result, void *user_data):
+    cdef object inst = <object>user_data
+    answer = Service(reply)
+    inst.request_handler(answer, result)
+
+
+cdef class ServiceRequest(Service):
+    def __init__(self, handle=None):
+        Service.__init__(self, <service_h>handle)
+
+    def request_handler(self, result):
         pass
+
+    def send(self):
+        cdef int err = service_send_launch_request(self._service, _service_reply_cb, <void*>self)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+
+
+cdef class Service:
+    def __cinit__(self, service_h handle):
+        cdef int err
+        cdef service_h service
+
+        if <void*>handle == NULL:
+            err = service_create(&service)
+        else:
+            err = service_clone(&service, handle)
+
+        if err != SERVICE_ERROR_NONE:
+            raise TizenServiceError(err)
+
+        self._service = service
+
+    def __del__(self):
+        service_destroy(self._service)
 
     @property
     def app_id(self):
@@ -466,12 +566,45 @@ cdef class Service:
 
     @property
     def data(self):
-        pass
+        data = {}
+        cdef int err = service_foreach_extra_data(self._service, _service_foreach_key, <void*>data)
+        if err != SERVICE_ERROR_NONE:
+            raise TizenServiceError(err)
+        return data
 
     @data.setter
     def data(self, value):
-        pass
+        cdef char *ckey, *cvalue
+        cdef char **cavalues
+        cdef int err
 
+        if not isinstance(value, dict):
+            raise TizenError("Service data has to be a dictionary!")
+
+        err = service_foreach_extra_data(self._service, _service_foreach_key_del, NULL)
+        if err != SERVICE_ERROR_NONE:
+            raise TizenServiceError(err)
+
+        for key, val in value.iteritems():
+            ckey = _fruni(key)
+            if isinstance(val, list):
+                try:
+                    cavalues = <char**>malloc(len(val) * sizeof(char *))
+                    for i in range(len(val)):
+                        cavalues[i] = _fruni(val[i])
+                    err = service_add_extra_data_array(self._service, ckey, cavalues, int(len(val)))
+                finally:
+                    free(cavalues)
+                if err != SERVICE_ERROR_NONE:
+                    raise TizenServiceError(err)
+            elif isinstance(val, str):
+                cvalue = _fruni(val)
+                err = service_add_extra_data(self._service, ckey, cvalue)
+                if err != SERVICE_ERROR_NONE:
+                    raise TizenServiceError(err)
+            else:
+                log.error("Invalid service error key data. Expecting strings or"
+                          "list of strings. Skipping data for key %s" % key)
 
     def get_matching_apps(self):
         ret = []
@@ -480,12 +613,3 @@ cdef class Service:
             raise TizenServiceError(err)
         return ret
 
-    def replay(self, value):
-        cdef int err = service_reply_to_launch_request(self._service, self._request, value)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
-
-#    def launch(self):
-#        cdef int err = service_send_launch_request(self._service, 
-#        if err != APP_ERROR_NONE:
-#            raise TizenServiceError(err)
