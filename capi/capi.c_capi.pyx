@@ -31,6 +31,21 @@ class TizenAppError(TizenError):
         self.error_code = error
 
 
+class TizenAlarmError(TizenError):
+    TIZEN_ALARM_ERRORS = {
+        ALARM_ERROR_NONE: "Successful",
+        ALARM_ERROR_INVALID_PARAMETER: "Invalid parameter",
+        ALARM_ERROR_INVALID_TIME: "Invalid time",
+        ALARM_ERROR_INVALID_DATE: "Invalid date",
+        ALARM_ERROR_CONNECTION_FAIL: "The alarm service connection failed",
+        ALARM_ERROR_OUT_OF_MEMORY: "Out of memory"
+    }
+
+    def __init__(self, error):
+        TizenError.__init__(self, TizenAlarmError.TIZEN_ALARM_ERRORS[error])
+        self.error_code = error
+
+
 class TizenServiceError(TizenError):
     TIZEN_SERVICE_ERRORS = {
         SERVICE_ERROR_NONE: "Successful",
@@ -314,6 +329,23 @@ cdef class TizenEflApp:
     def reclaim_system_cache(self, val):
         app_set_reclaiming_system_cache_on_pause(bool(val))
 
+    def get_alarms(self):
+        alarms = []
+        cdef int err = alarm_foreach_registered_alarm(_alarm_registered_alarm_cb, <void*>alarms)
+        if err != ALARM_ERROR_NONE:
+            raise TizenAlarmError(err)
+        return alarms
+
+    def cancel_all_alarms(self):
+        cdef int err = alarm_cancel_all()
+        if err != ALARM_ERROR_NONE:
+            raise TizenAlarmError(err)
+
+cdef bool _alarm_registered_alarm_cb(int alarm_id, void *user_data):
+    cdef object alarms = <object>user_data
+    alarm = Alarm(alarm_id)
+    alarms.append(alarm)
+    return True
 
 cdef bool _service_math_cb(service_h s, const char *app_id, void *data):
     cdef bytes aid = app_id
@@ -613,3 +645,106 @@ cdef class Service:
             raise TizenServiceError(err)
         return ret
 
+
+cdef class Alarm:
+
+    def __init__(self, id=None):
+        self._id = id
+
+    def cancel(self):
+        if not self._id:
+            return
+        cdef err = alarm_cancel(self._id)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        self._id = None
+
+    def service(self):
+        if not self._id:
+            return
+        cdef service_h service
+        cdef err = alarm_get_service(self._id, &service)
+        if err != APP_ERROR_NONE:
+            raise TizenServiceError(err)
+        return Service(service)
+
+    @property
+    def date(self):
+        cdef tm ctime
+        cdef err, period
+        if not self._id:
+            return None
+        err = alarm_get_scheduled_date(self._id, &ctime)
+        if err != ALARM_ERROR_NONE:
+            raise TizenAlarmError(err)
+        ctime.tm_year + 1900
+        ctime.tm_mon + 1
+        return ctime
+
+    @property
+    def period(self):
+        cdef int err, period
+        if not self._id:
+            return None
+        err = alarm_get_scheduled_period(self._id, &period)
+        if err != ALARM_ERROR_NONE:
+            raise TizenAlarmError(err)
+        return period
+
+    @property
+    def week_flags(self):
+        ret = []
+        cdef int err, flags
+        if not self._id:
+            return None
+        err = alarm_get_scheduled_recurrence_week_flag(self._id, &flags)
+        if err != ALARM_ERROR_NONE:
+            raise TizenAlarmError(err)
+        for i in range(7):
+            if flags & (0x1 << i) > 0:
+                ret.appned(i)
+        return ret
+
+    cdef tm _python_time_to_struct_tm(self, time):
+        cdef tm ctime
+        ctime.tm_sec = int(time.tm_sec)
+        ctime.tm_min = int(time.tm_min)
+        ctime.tm_hour = int(time.tm_hour)
+        ctime.tm_mday = int(time.tm_mday)
+        ctime.tm_mon = int(time.tm_mon) - 1
+        ctime.tm_year = int(time.tm_year) - 1900
+        ctime.tm_wday = int(time.tm_wday)
+        ctime.tm_yday = int(time.tm_yday)
+        ctime.tm_isdst = int(time.tm_isdta)
+        return ctime
+
+    def schedule(self, service, date, period=None, week_flags=None):
+        cdef int err, alarm_id, flags = 0
+        cdef tm tm_time
+        if self._id:
+            raise TizenError("Alarm already scheduled!")
+
+        tm_time = self._python_time_to_struct_tm(date)
+
+        if (period and week_flags) or not (period or week_flags):
+            raise TypeError("Please set period or week_flags")
+
+        if period:
+            if not isinstance(period, int):
+                raise TypeError("Tizen Alarm requires int type as period value.")
+            err = alarm_schedule_at_date(service._service, &tm_time, period,
+                                         &alarm_id)
+        elif week_flags:
+            for v in week_flags:
+                if not isinstance(v, int) or v < 0 or v > 6:
+                    raise TypeError("Week flags should be a list of integers, where"
+                                    " every int: 0 <= i <= 6")
+                _week_flags = list(set(week_flags))
+                for wf in _week_flags:
+                    flags = flags | (0x01 << wf)
+                err = alarm_schedule_with_recurrence_week_flag(service._service,
+                        &tm_time, flags, &alarm_id)
+
+        if err != ALARM_ERROR_NONE:
+            raise TizenAlarmError(err)
+        self._id = alarm_id

@@ -4,6 +4,18 @@ cdef extern from "stdlib.h" nogil:
     void *malloc(size_t size)
     void free(void *ptr)
 
+cdef extern from "time.h" nogil:
+    cdef struct tm:
+        int tm_sec
+        int tm_min
+        int tm_hour
+        int tm_mday
+        int tm_mon
+        int tm_year
+        int tm_wday
+        int tm_yday
+        int tm_isdst
+
 cdef extern from "string.h" nogil:
     void *memcpy(void *dst, void *src, int n)
     void *memset(void *mem, int val, size_t size)
@@ -115,3 +127,34 @@ cdef extern from "app_service.h":
     int service_create(service_h *service)
     int service_destroy(service_h service)
     int service_clone(service_h *clone, service_h service)
+
+cdef extern from "app_alarm.h":
+    ctypedef enum alarm_error_e:
+        ALARM_ERROR_NONE
+        ALARM_ERROR_INVALID_PARAMETER
+        ALARM_ERROR_INVALID_TIME
+        ALARM_ERROR_INVALID_DATE
+        ALARM_ERROR_CONNECTION_FAIL
+        ALARM_ERROR_OUT_OF_MEMORY
+
+    ctypedef enum alarm_week_flag_e:
+        ALARM_WEEK_FLAG_SUNDAY
+        ALARM_WEEK_FLAG_MONDAY
+        ALARM_WEEK_FLAG_TUESDAY
+        ALARM_WEEK_FLAG_WEDNESDAY
+        ALARM_WEEK_FLAG_THURSDAY
+        ALARM_WEEK_FLAG_FRIDAY
+        ALARM_WEEK_FLAG_SATURDAY
+
+    ctypedef bool (*alarm_registered_alarm_cb)(int alarm_id, void *user_data)
+
+    int alarm_cancel(int alarm_id)
+    int alarm_cancel_all()
+    int alarm_foreach_registered_alarm(alarm_registered_alarm_cb callback, void *user_data)
+    int alarm_get_scheduled_date(int alarm_id, tm *date)
+    int alarm_get_scheduled_period(int alarm_id, int *period)
+    int alarm_get_scheduled_recurrence_week_flag(int alarm_id, int *week_flag)
+    int alarm_get_service(int alarm_id, service_h *service)
+    int alarm_schedule_after_delay(service_h service, int delay, int period, int *alarm_id)
+    int alarm_schedule_at_date(service_h service, tm *date, int period, int *alarm_id)
+    int alarm_schedule_with_recurrence_week_flag(service_h service, tm *date, int week_flag,int *alarm_id)
