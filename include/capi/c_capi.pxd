@@ -158,3 +158,81 @@ cdef extern from "app_alarm.h":
     int alarm_schedule_after_delay(service_h service, int delay, int period, int *alarm_id)
     int alarm_schedule_at_date(service_h service, tm *date, int period, int *alarm_id)
     int alarm_schedule_with_recurrence_week_flag(service_h service, tm *date, int week_flag,int *alarm_id)
+
+cdef extern from "app_ui_notification.h":
+    ctypedef struct ui_notification_h:
+        pass
+
+    ctypedef enum ui_notification_error_e:
+        UI_NOTIFICATION_ERROR_NONE
+        UI_NOTIFICATION_ERROR_INVALID_PARAMETER
+        UI_NOTIFICATION_ERROR_OUT_OF_MEMORY
+        UI_NOTIFICATION_ERROR_DB_FAILED
+        UI_NOTIFICATION_ERROR_NO_SUCH_FILE
+        UI_NOTIFICATION_ERROR_INVALID_STATE
+
+    ctypedef enum ui_notification_progress_type_e:
+        UI_NOTIFICATION_PROGRESS_TYPE_SIZE
+        UI_NOTIFICATION_PROGRESS_TYPE_PERCENTAGE
+
+    ctypedef bool (*ui_notification_cb)(ui_notification_h notification, void *user_data)
+
+    int ui_notification_cancel(ui_notification_h notification)
+    void ui_notification_cancel_all()
+    int ui_notification_cancel_all_by_app_id(const char *app_id, bool ongoing)
+    void ui_notification_cancel_all_by_package(const char *package, bool ongoing)
+    void ui_notification_cancel_all_by_type(bool ongoing)
+    int ui_notification_clone(ui_notification_h *clone, ui_notification_h notification)
+    int ui_notification_create(bool ongoing, ui_notification_h *notification)
+    int ui_notification_destroy(ui_notification_h notification)
+    int ui_notification_foreach_notification_posted(bool ongoing, ui_notification_cb callback, void *user_data)
+    int ui_notification_get_content(ui_notification_h notification, char **content)
+    int ui_notification_get_icon(ui_notification_h notification, char **path)
+    int ui_notification_get_id(ui_notification_h notification, int *id)
+    int ui_notification_get_service(ui_notification_h notification, service_h *service)
+    int ui_notification_get_sound(ui_notification_h notification, char **path)
+    int ui_notification_get_time(ui_notification_h notification, tm **time)
+    int ui_notification_get_title(ui_notification_h notification, char **title)
+    int ui_notification_get_vibration(ui_notification_h notification, int *value)
+    int ui_notification_is_ongoing(ui_notification_h notification, int *ongoing)
+    int ui_notification_post(ui_notification_h notification)
+    int ui_notification_set_content(ui_notification_h notification, const char *content)
+    int ui_notification_set_icon(ui_notification_h notification, const char *path)
+    int ui_notification_set_service(ui_notification_h notification, service_h service)
+    int ui_notification_set_sound(ui_notification_h notification, const char *path)
+    int ui_notification_set_time(ui_notification_h notification, tm *time)
+    int ui_notification_set_title(ui_notification_h notification, const char *title)
+    int ui_notification_set_vibration(ui_notification_h notification, bool value)
+    int ui_notification_update(ui_notification_h notification)
+    int ui_notification_update_progress(ui_notification_h notification, ui_notification_progress_type_e type, double value)
+
+cdef extern from "app_storage.h":
+
+    ctypedef enum storage_error_e:
+        STORAGE_ERROR_NONE
+        STORAGE_ERROR_INVALID_PARAMETER
+        STORAGE_ERROR_OUT_OF_MEMORY
+        STORAGE_ERROR_NOT_SUPPORTED
+
+    ctypedef enum storage_type_e:
+        STORAGE_TYPE_INTERNAL
+        STORAGE_TYPE_EXTERNAL
+
+    ctypedef enum storage_state_e:
+        STORAGE_STATE_UNMOUNTABLE
+        STORAGE_STATE_REMOVED
+        STORAGE_STATE_MOUNTED
+        STORAGE_STATE_MOUNTED_READ_ONLY
+
+    ctypedef bool (*storage_device_supported_cb)(int storage, storage_type_e type, storage_state_e state, const char *path, void *user_data)
+
+    ctypedef void (*storage_state_changed_cb)(int storage, storage_state_e state, void *user_data)
+
+    int storage_foreach_device_supported(storage_device_supported_cb callback, void *user_data)
+    int storage_get_available_space(int storage, unsigned long long *bytes)
+    int storage_get_root_directory(int storage, char **path)
+    int storage_get_state(int storage, storage_state_e *state)
+    int storage_get_total_space(int storage, unsigned long long *bytes)
+    int storage_get_type(int storage, storage_type_e *type)
+    int storage_set_state_changed_cb(int storage, storage_state_changed_cb callback, void *user_data)
+    int storage_unset_state_changed_cb(int storage)

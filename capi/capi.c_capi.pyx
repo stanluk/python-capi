@@ -1,11 +1,25 @@
 from cpython cimport PyMem_Malloc, PyMem_Free
 from cpython cimport bool
+from cython.operator cimport dereference as deref
 
 import sys
 import logging
 
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("capi")
+
+
+STORAGE_STATES = {
+    STORAGE_STATE_UNMOUNTABLE: "Unmountable",
+    STORAGE_STATE_REMOVED: "Removed",
+    STORAGE_STATE_MOUNTED: "Mounted",
+    STORAGE_STATE_MOUNTED_READ_ONLY: "Mounte RO"
+}
+
+STORAGE_TYPES = {
+    STORAGE_TYPE_INTERNAL: "Internal",
+    STORAGE_TYPE_EXTERNAL: "External"
+}
 
 
 class TizenError(Exception):
@@ -63,6 +77,34 @@ class TizenServiceError(TizenError):
         self.error_code = error
 
 
+class TizenNotificationError(TizenError):
+    TIZEN_NOTIFICATION_ERRORS = {
+        UI_NOTIFICATION_ERROR_NONE: "Successful",
+        UI_NOTIFICATION_ERROR_INVALID_PARAMETER: "Invalid parameter",
+        UI_NOTIFICATION_ERROR_OUT_OF_MEMORY: "Out of memory",
+        UI_NOTIFICATION_ERROR_DB_FAILED: "DB operation failed",
+        UI_NOTIFICATION_ERROR_NO_SUCH_FILE: "No such file",
+        UI_NOTIFICATION_ERROR_INVALID_STATE: "Invalid state"
+    }
+
+    def __init__(self, error):
+        TizenError.__init__(self, TizenAppError.TIZEN_NOTIFICATION_ERRORS[error])
+        self.error_code = error
+
+
+class TizenStorageError(TizenError):
+    TIZEN_STORAGE_ERRORS = {
+        STORAGE_ERROR_NONE: "Successful",
+        STORAGE_ERROR_INVALID_PARAMETER: "Invalid parameter",
+        STORAGE_ERROR_OUT_OF_MEMORY: "Out of memory",
+        STORAGE_ERROR_NOT_SUPPORTED: "Not supported storage",
+    }
+
+    def __init__(self, error):
+        TizenError.__init__(self, TizenAppError.TIZEN_STORAGE_ERRORS[error])
+        self.error_code = error
+
+
 cdef inline char* _fruni(s):
     cdef char* c_string
     if isinstance(s, unicode):
@@ -76,6 +118,48 @@ cdef inline char* _fruni(s):
         raise TypeError("Expected str or unicode object, got %s" % (type(s).__name__))
     return c_string
 
+
+def _get_storage_attr(id):
+    cdef int err
+    cdef unsigned long long space
+    cdef char *cstr
+    cdef bytes pstr
+    cdef storage_state_e state
+    cdef storage_type_e stype
+    info = {}
+
+    info['id'] = id
+
+    err = storage_get_available_space(id, &space)
+    if err != STORAGE_ERROR_NONE:
+        raise TizenStorageError(err)
+    info['available_space'] = space
+
+    err = storage_get_root_directory(id, &cstr)
+    if err != STORAGE_ERROR_NONE:
+        raise TizenStorageError(err)
+    try:
+        pstr = cstr
+    finally:
+        free(cstr)
+    info['root_dir'] = pstr
+
+    err = storage_get_state(id, &state)
+    if err != STORAGE_ERROR_NONE:
+        raise TizenStorageError(err)
+    info['state'] = STORAGE_STATES[state]
+
+    err = storage_get_total_space(id, &space)
+    if err != STORAGE_ERROR_NONE:
+        raise TizenStorageError(err)
+    info['total_space'] = space
+
+    err = storage_get_type(id, &stype)
+    if err != STORAGE_ERROR_NONE:
+        raise TizenStorageError(err)
+    info['state'] = STORAGE_TYPES[state]
+
+    return info
 
 cdef bool on_create(void *cls) with gil:
     cdef object inst = <object>cls
@@ -340,6 +424,79 @@ cdef class TizenEflApp:
         cdef int err = alarm_cancel_all()
         if err != ALARM_ERROR_NONE:
             raise TizenAlarmError(err)
+
+    def cancel_all_notifications(self, app_id=None, package=None, type=None,
+                                 ongoing=False):
+        cdef int err = UI_NOTIFICATION_ERROR_NONE
+        cdef char *cstr
+        if app_id:
+            cstr = app_id
+            err = ui_notification_cancel_all_by_app_id(cstr, ongoing)
+        elif package:
+            cstr = package
+            ui_notification_cancel_all_by_package(cstr, ongoing)
+        elif type:
+            ui_notification_cancel_all_by_type(ongoing)
+
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+
+    def notifications(self):
+        cdef err
+        notis = []
+        err = ui_notification_foreach_notification_posted(True,
+                _ui_notification_cb, <void*>notis)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+           raise TizenNotificationError(err)
+        err = ui_notification_foreach_notification_posted(False,
+                _ui_notification_cb, <void*>notis)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+           raise TizenNotificationError(err)
+        return notis
+
+    def storage(self):
+        cdef int err
+        ret = []
+        err = storage_foreach_device_supported(_storage_device_supported_cb,
+                <void*>ret)
+        if err != STORAGE_ERROR_NONE:
+            raise TizenStorageError(err)
+        return ret
+
+    def storage_change_handler_add(self, id, call_obj):
+        cdef int err
+        err = storage_set_state_changed_cb(id, _storage_state_changed_cb,
+                                           <void*>call_obj)
+        if err != STORAGE_ERROR_NONE:
+            raise TizenStorageError(err)
+
+    def storage_change_handler_del(self, id):
+        cdef int err = storage_unset_state_changed_cb(id)
+        if err != STORAGE_ERROR_NONE:
+            raise TizenStorageError(err)
+
+
+cdef void _storage_state_changed_cb(int storage, storage_state_e state, void
+                                    *user_data) with gil:
+    cdef object func = <object>user_data
+    info = _get_storage_attr(storage)
+    func(info)
+
+
+cdef bool _storage_device_supported_cb(int storage, storage_type_e type,
+    storage_state_e state, const char *path, void *user_data):
+    cdef object ret = <object>user_data
+    info = _get_storage_attr(storage)
+    ret.append(info)
+    return True
+
+
+cdef bool _ui_notification_cb(ui_notification_h notification, void *user_data):
+    cdef object notis = <object>user_data
+    noti = Notification(handle=notification)
+    notis.append(noti)
+    return True
+
 
 cdef bool _alarm_registered_alarm_cb(int alarm_id, void *user_data):
     cdef object alarms = <object>user_data
@@ -705,26 +862,13 @@ cdef class Alarm:
                 ret.appned(i)
         return ret
 
-    cdef tm _python_time_to_struct_tm(self, time):
-        cdef tm ctime
-        ctime.tm_sec = int(time.tm_sec)
-        ctime.tm_min = int(time.tm_min)
-        ctime.tm_hour = int(time.tm_hour)
-        ctime.tm_mday = int(time.tm_mday)
-        ctime.tm_mon = int(time.tm_mon) - 1
-        ctime.tm_year = int(time.tm_year) - 1900
-        ctime.tm_wday = int(time.tm_wday)
-        ctime.tm_yday = int(time.tm_yday)
-        ctime.tm_isdst = int(time.tm_isdta)
-        return ctime
-
     def schedule(self, service, date, period=None, week_flags=None):
         cdef int err, alarm_id, flags = 0
         cdef tm tm_time
         if self._id:
             raise TizenError("Alarm already scheduled!")
 
-        tm_time = self._python_time_to_struct_tm(date)
+        tm_time = _python_time_to_struct_tm(date)
 
         if (period and week_flags) or not (period or week_flags):
             raise TypeError("Please set period or week_flags")
@@ -748,3 +892,271 @@ cdef class Alarm:
         if err != ALARM_ERROR_NONE:
             raise TizenAlarmError(err)
         self._id = alarm_id
+
+
+cdef tm _python_time_to_struct_tm(time):
+    cdef tm ctime
+    ctime.tm_sec = int(time.tm_sec)
+    ctime.tm_min = int(time.tm_min)
+    ctime.tm_hour = int(time.tm_hour)
+    ctime.tm_mday = int(time.tm_mday)
+    ctime.tm_mon = int(time.tm_mon) - 1
+    ctime.tm_year = int(time.tm_year) - 1900
+    ctime.tm_wday = int(time.tm_wday)
+    ctime.tm_yday = int(time.tm_yday)
+    ctime.tm_isdst = int(time.tm_isdta)
+    return ctime
+
+
+cdef object _struct_tm_to_python_time(tm ctime):
+    ptime = object()
+    ptime.tm_sec = ctime.tm_sec
+    ptime.tm_min = ctime.tm_min
+    ptime.tm_hour = ctime.tm_hour
+    ptime.tm_mday = ctime.tm_mday
+    ptime.tm_mon = ctime.tm_mon + 1
+    ptime.tm_year = ctime.tm_year + 1900
+    ptime.tm_wday = ctime.tm_wday
+    ptime.tm_yday = ctime.tm_yday
+    ptime.tm_isdst = ctime.tm_isdta
+    return ptime
+
+
+cdef class Notification:
+    def __init__(self, ongoing=False, handle=None, noclone=False):
+        cdef int err = UI_NOTIFICATION_ERROR_NONE
+        cdef ui_notification_h noti
+        if handle:
+            if noclone:
+                noti = handle
+            else:
+                err = ui_notification_clone(&noti, handle)
+        else:
+            err = ui_notification_create(bool(ongoing), &noti)
+
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._handle = noti
+
+    def __del__(self):
+        ui_notification_destroy(self._handle)
+
+    @property
+    def title(self):
+        cdef int err
+        cdef char *cstr
+        cdef bytes ret
+        if self._title:
+            return self._title
+        err = ui_notification_get_title(self._handle, &cstr)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        try:
+            ret = cstr
+        finally:
+            free(cstr)
+        self._title = ret
+        return ret
+
+    @title.setter
+    def title(self, value):
+        cdef int err
+        cdef char *cstr
+        cstr = _fruni(value)
+        err = ui_notification_set_title(self._handle, cstr)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._title = cstr
+
+    @property
+    def content(self):
+        cdef int err
+        cdef char *cstr
+        cdef bytes ret
+        if self._content:
+            return self._content
+        err = ui_notification_get_content(self._handle, &cstr)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        try:
+            ret = cstr
+        finally:
+            free(cstr)
+        self._content = ret
+        return ret
+
+    @content.setter
+    def content(self, value):
+        cdef int err
+        cdef char *cstr
+        cstr = _fruni(value)
+        err = ui_notification_set_content(self._handle, cstr)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._content = cstr
+
+    @property
+    def icon(self):
+        cdef int err
+        cdef char *cstr
+        cdef bytes ret
+        if self._icon:
+            return self._icon
+        err = ui_notification_get_content(self._handle, &cstr)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        try:
+            ret = cstr
+        finally:
+            free(cstr)
+        self._content = ret
+        return ret
+
+    @icon.setter
+    def icon(self, value):
+        cdef int err
+        cdef char *cstr
+        cstr = _fruni(value)
+        err = ui_notification_set_icon(self._handle, cstr)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._icon = cstr
+
+    @property
+    def id(self):
+        cdef int err, cid
+        if self._id:
+            return self._id
+        err = ui_notification_get_id(self._handle, &cid)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._id = cid
+        return cid
+
+    @property
+    def service(self):
+        cdef int err
+        cdef service_h serv
+        if self._service:
+            return self._service
+        err = ui_notification_get_service(self._handle, &serv)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        pserv = Service(handle=serv)
+        service_destroy(serv)
+        return pserv
+
+    @service.setter
+    def service(self, value):
+        cdef int err
+        err = ui_notification_set_service(self._handle, value._service)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._service = value
+
+    @property
+    def time(self):
+        cdef int err
+        cdef tm *ctim
+        if self._time:
+            return self._time
+        err = ui_notification_get_time(self._handle, &ctim)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        try:
+            self._time = _struct_tm_to_python_time(deref(ctim))
+        finally:
+            free(ctim)
+        return self._time
+
+    @time.setter
+    def time(self, value):
+        cdef int err
+        cdef tm ctim = _python_time_to_struct_tm(value)
+        err = ui_notification_set_time(self._handle, &ctim)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._time = ctim
+
+    @property
+    def sound(self):
+        cdef int err
+        cdef char *cstr
+        cdef bytes ret
+        if self._sound is None:
+            return self._sound
+        err = ui_notification_get_sound(self._handle, &cstr)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        try:
+            ret = cstr
+        finally:
+            free(cstr)
+        self._sound = ret
+        return ret
+
+    @sound.setter
+    def sound(self, value):
+        cdef int err
+        cdef char *cstr
+        cstr = _fruni(value)
+        err = ui_notification_set_sound(self._handle, cstr)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._sound = cstr
+
+    @property
+    def vibration(self):
+        cdef int err
+        cdef int ret
+        if self._vibration is None:
+            return self._vibration
+        err = ui_notification_get_vibration(self._handle, &ret)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._vibration = bool(ret)
+        return self._vibration
+
+    @vibration.setter
+    def vibration(self, value):
+        cdef int err
+        cdef bool vib
+        vib = bool(value)
+        err = ui_notification_set_vibration(self._handle, vib)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+        self._vibration = vib
+
+    @property
+    def ongoing(self):
+        cdef int err
+        cdef int ison
+        if self._ongoing is None:
+            err = ui_notification_is_ongoing(self._handle, &ison)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            self._ongoing = bool(ison)
+        return self._ongoing
+
+    def post(self, title=None, content=None, ):
+        cdef int err
+        err = ui_notification_post(self._handle)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+
+    def update(self, value=0):
+        cdef int err
+        if value == 0:
+            err = ui_notification_update(self._handle)
+        else:
+            err = ui_notification_update_progress(self._handle,
+                        UI_NOTIFICATION_PROGRESS_TYPE_PERCENTAGE,
+                        value)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
+
+    def cancel(self):
+        cdef err
+        err = ui_notification_cancel(self._handle)
+        if err != UI_NOTIFICATION_ERROR_NONE:
+            raise TizenNotificationError(err)
