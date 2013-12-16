@@ -22,8 +22,10 @@ cdef extern from "string.h" nogil:
 
 cdef extern from "app.h":
 
-    ctypedef struct service_h:
+    ctypedef struct service_s:
         pass
+
+    ctypedef service_s * service_h
 
     ctypedef enum app_error_e:
         APP_ERROR_NONE

@@ -1,9 +1,11 @@
-from cpython cimport PyMem_Malloc, PyMem_Free
+from cpython cimport PyMem_Malloc, PyMem_Free, Py_INCREF, Py_DECREF
 from cpython cimport bool
 from cython.operator cimport dereference as deref
 
 import sys
 import logging
+from datetime import datetime
+from time import mktime
 
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("capi")
@@ -119,6 +121,10 @@ cdef inline char* _fruni(s):
     return c_string
 
 
+cdef unicode _ctouni(char *s):
+    return s.decode('UTF-8', 'strict') if s else None
+
+
 def _get_storage_attr(id):
     cdef int err
     cdef unsigned long long space
@@ -202,7 +208,8 @@ cdef void on_terminate(void *cls) with gil:
 cdef void on_service(service_h service, void *cls) with gil:
     cdef object inst = <object>cls
     try:
-        srv = ServiceRequest(handle=service)
+        srv = Service()
+        Service._set_handle(srv, handle=service)
         inst.service(srv)
     except:
         inst._set_exception()
@@ -500,7 +507,8 @@ cdef bool _ui_notification_cb(ui_notification_h notification, void *user_data):
 
 cdef bool _alarm_registered_alarm_cb(int alarm_id, void *user_data):
     cdef object alarms = <object>user_data
-    alarm = Alarm(alarm_id)
+    alarm = Alarm()
+    alarm._set_id(alarm_id)
     alarms.append(alarm)
     return True
 
@@ -516,6 +524,7 @@ cdef bool _service_foreach_key_del(service_h handle, const char *key, void *data
     if err != SERVICE_ERROR_NONE:
         return False
     return True
+
 
 cdef bool _service_foreach_key(service_h handle, const char *key, void *data):
     cdef int is_extra_data
@@ -562,250 +571,272 @@ cdef bool _service_foreach_key(service_h handle, const char *key, void *data):
 
 cdef class ServiceAnswer(Service):
     def __init__(self, request):
-        Service.__init__(self)
-        cdef service_h service
         if not isinstance(request, Service):
             raise TizenError("Invalid type: request Service instance")
-        err = service_clone(&service, <service_h>request._service)
-        self._request = service
-        if err != SERVICE_ERROR_NONE:
-            raise TizenServiceError(err)
+        Service.__init__(self)
+        Service._set_handle(self, handle=NULL)
+        self._request = request
 
     def __del__(self):
         Service.__del__(self)
-        service_destroy(self._request)
 
     def send(self, value):
-        cdef int err = service_reply_to_launch_request(self._service, self._request, value)
+        cdef int err = service_reply_to_launch_request(
+                                        Service._get_handle(self),
+                                        Service._get_handle(self._request),
+                                        value)
         if err != APP_ERROR_NONE:
             raise TizenServiceError(err)
 
 
-cdef void _service_reply_cb(service_h request, service_h reply, service_result_e result, void *user_data):
+cdef void _service_reply_cb(service_h request, service_h reply,
+            service_result_e result, void *user_data) with gil:
     cdef object inst = <object>user_data
-    answer = Service(reply)
+    answer = Service()
+    answer._set_handle(handle=reply)
     inst.request_handler(answer, result)
+    Py_DECREF(inst)
 
 
 cdef class ServiceRequest(Service):
-    def __init__(self, handle=None):
-        Service.__init__(self, <service_h>handle)
+    def __init__(self):
+        Service.__init__(self)
+        Service._set_handle(self, handle=NULL)
 
-    def request_handler(self, result):
+    def request_handler(self, answer, result):
         pass
 
     def send(self):
-        cdef int err = service_send_launch_request(self._service, _service_reply_cb, <void*>self)
+        cdef int err = service_send_launch_request(Service._get_handle(self),
+                                _service_reply_cb, <void*>self)
+
         if err != APP_ERROR_NONE:
             raise TizenServiceError(err)
+        Py_INCREF(self)
 
 
-cdef class Service:
-    def __cinit__(self, service_h handle):
-        cdef int err
-        cdef service_h service
+cdef class Service(object):
+    cdef service_h _handle
 
-        if <void*>handle == NULL:
-            err = service_create(&service)
+    def __cinit__(self):
+        self._handle = NULL
+
+    cdef int _set_handle(self, service_h handle, bool clone=True) except? 0:
+        assert self._handle == NULL, "Object already has handle"
+        cdef service_h hdl
+        cdef int err = SERVICE_ERROR_NONE
+        if handle == NULL:
+            err = service_create(&hdl)
         else:
-            err = service_clone(&service, handle)
+            if clone:
+                err = service_clone(&hdl, handle)
+            else:
+                hdl = handle
 
-        if err != SERVICE_ERROR_NONE:
-            raise TizenServiceError(err)
+        self._handle = hdl
+        return err
 
-        self._service = service
+    cdef service_h _get_handle(self) except NULL:
+        return self._handle
 
     def __del__(self):
-        service_destroy(self._service)
+        service_destroy(self._handle)
 
-    @property
-    def app_id(self):
-        cdef bytes pystr
-        cdef char *cstr
-        cdef int err = service_get_app_id(self._service, &cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
-        try:
-            pystr = cstr
-        finally:
-            free(cstr)
-        return pystr
+    property app_id:
+        def __get__(self):
+            assert self._handle != NULL, "Service handle is NULL!"
+            ret = None
+            cdef char *cstr = NULL
+            cdef int err = service_get_app_id(self._handle, &cstr)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
-    @app_id.setter
-    def app_id(self, val):
-        cdef char *cstr = _fruni(val)
-        cdef err = service_set_app_id(self._service, cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
+        def __set__(self, val):
+            assert self._handle == NULL, "Service handle is NULL!"
+            cdef char *cstr = _fruni(val)
+            cdef err = service_set_app_id(self._handle, cstr)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
 
-    @property
-    def category(self):
-        cdef bytes pystr
-        cdef char *cstr
-        cdef int err = service_get_category(self._service, &cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
-        try:
-            pystr = cstr
-        finally:
-            free(cstr)
-        return pystr
+    property category:
+        def __get__(self):
+            assert self._handle != NULL, "Service handle is NULL!"
+            cdef char *cstr = NULL
+            cdef int err = service_get_category(self._handle, &cstr)
+            ret = None
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
-    @category.setter
-    def category(self, val):
-        cdef char *cstr = _fruni(val)
-        cdef err = service_set_app_id(self._service, cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
+        def __set__(self, val):
+            assert self._handle != NULL, "Service handle is NULL!"
+            cdef char *cstr = _fruni(val)
+            cdef err = service_set_app_id(self._handle, cstr)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
 
-    @property
-    def mime(self):
-        cdef bytes pystr
-        cdef char *cstr
-        cdef int err = service_get_mime(self._service, &cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
-        try:
-            pystr = cstr
-        finally:
-            free(cstr)
-        return pystr
+    property mime:
+        def __get__(self):
+            assert self._handle != NULL, "Service handle is NULL!"
+            cdef char *cstr = NULL
+            cdef int err = service_get_mime(self._handle, &cstr)
+            ret = None
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
-    @mime.setter
-    def mime(self, val):
-        cdef char *cstr = _fruni(val)
-        cdef err = service_set_mime(self._service, cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
+        def __set__(self, val):
+            assert self._handle != NULL, "Service handle is NULL!"
+            cdef char *cstr = _fruni(val)
+            cdef err = service_set_mime(self._handle, cstr)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
 
-    @property
-    def operation(self):
-        cdef bytes pystr
-        cdef char *cstr
-        cdef int err = service_get_operation(self._service, &cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
-        try:
-            pystr = cstr
-        finally:
-            free(cstr)
-        return pystr
+    property operation:
+        def __get__(self):
+            assert self._handle != NULL, "Service handle is NULL!"
+            ret = None
+            cdef char *cstr = NULL
+            cdef int err = service_get_operation(self._handle, &cstr)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
-    @operation.setter
-    def operation(self, val):
-        cdef char *cstr = _fruni(val)
-        cdef err = service_set_operation(self._service, cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
+        def __set__(self, val):
+            assert self._handle != NULL, "Service handle is NULL!"
+            cdef char *cstr = _fruni(val)
+            cdef err = service_set_operation(self._handle, cstr)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
 
-    @property
-    def uri(self):
-        cdef bytes pystr
-        cdef char *cstr
-        cdef int err = service_get_uri(self._service, &cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
-        try:
-            pystr = cstr
-        finally:
-            free(cstr)
-        return pystr
+    property uri:
+        def __get__(self):
+            assert self._handle != NULL, "Service handle is NULL!"
+            ret = None
+            cdef char *cstr = NULL
+            cdef int err = service_get_uri(self._handle, &cstr)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
-    @uri.setter
-    def uri(self, val):
-        cdef char *cstr = _fruni(val)
-        cdef err = service_set_uri(self._service, cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
+        def __set__(self, val):
+            cdef char *cstr = _fruni(val)
+            cdef err = service_set_uri(self._handle, cstr)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
 
-    @property
-    def window(self):
-        cdef unsigned int cint
-        cdef int err = service_get_window(self._service, &cint)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
-        return int(cint)
+    property window:
+        def __get__(self):
+            cdef unsigned int cint
+            cdef int err = service_get_window(self._handle, &cint)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
+            return int(cint)
 
-    @window.setter
-    def window(self, val):
-        cdef unsigned int cint = int(val)
-        cdef err = service_set_window(self._service, cint)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
+        def __set__(self, val):
+            cdef unsigned int cint = int(val)
+            cdef err = service_set_window(self._handle, cint)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
 
-    @property
-    def caller(self):
-        cdef bytes pystr
-        cdef char *cstr
-        cdef int err = service_get_caller(self._service, &cstr)
-        if err != APP_ERROR_NONE:
-            raise TizenServiceError(err)
-        try:
-            pystr = cstr
-        finally:
-            free(cstr)
-        return pystr
+    property caller:
+        def __get__(self):
+            ret = None
+            cdef char *cstr = NULL
+            cdef int err = service_get_caller(self._handle, &cstr)
+            if err != APP_ERROR_NONE:
+                raise TizenServiceError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
     def is_reply_requested(self):
         cdef int ret
-        cdef int err = service_is_reply_requested(self._service, &ret)
+        cdef int err = service_is_reply_requested(self._handle, &ret)
         if err != APP_ERROR_NONE:
             raise TizenServiceError(err)
-        return ret
+        return bool(ret)
 
-    @property
-    def data(self):
-        data = {}
-        cdef int err = service_foreach_extra_data(self._service, _service_foreach_key, <void*>data)
-        if err != SERVICE_ERROR_NONE:
-            raise TizenServiceError(err)
-        return data
+    property data:
+        def __get__(self):
+            data = {}
+            cdef int err = service_foreach_extra_data(self._handle,
+                                 _service_foreach_key, <void*>data)
+            if err != SERVICE_ERROR_NONE:
+                raise TizenServiceError(err)
+            return data
 
-    @data.setter
-    def data(self, value):
-        cdef char *ckey, *cvalue
-        cdef char **cavalues
-        cdef int err
+        def __set__(self, value):
+            cdef char *ckey, *cvalue
+            cdef char **cavalues
+            cdef int err
 
-        if not isinstance(value, dict):
-            raise TizenError("Service data has to be a dictionary!")
+            if not isinstance(value, dict):
+                raise TizenError("Service data has to be a dictionary!")
 
-        err = service_foreach_extra_data(self._service, _service_foreach_key_del, NULL)
-        if err != SERVICE_ERROR_NONE:
-            raise TizenServiceError(err)
+            err = service_foreach_extra_data(self._handle, _service_foreach_key_del, NULL)
+            if err != SERVICE_ERROR_NONE:
+                raise TizenServiceError(err)
 
-        for key, val in value.iteritems():
-            ckey = _fruni(key)
-            if isinstance(val, list):
-                try:
-                    cavalues = <char**>malloc(len(val) * sizeof(char *))
-                    for i in range(len(val)):
-                        cavalues[i] = _fruni(val[i])
-                    err = service_add_extra_data_array(self._service, ckey, cavalues, int(len(val)))
-                finally:
-                    free(cavalues)
-                if err != SERVICE_ERROR_NONE:
-                    raise TizenServiceError(err)
-            elif isinstance(val, str):
-                cvalue = _fruni(val)
-                err = service_add_extra_data(self._service, ckey, cvalue)
-                if err != SERVICE_ERROR_NONE:
-                    raise TizenServiceError(err)
-            else:
-                log.error("Invalid service error key data. Expecting strings or"
-                          "list of strings. Skipping data for key %s" % key)
+            for key, val in value.iteritems():
+                ckey = _fruni(key)
+                if isinstance(val, list):
+                    try:
+                        cavalues = <char**>malloc(len(val) * sizeof(char *))
+                        for i in range(len(val)):
+                            cavalues[i] = _fruni(val[i])
+                        err = service_add_extra_data_array(self._handle, ckey,
+                                                      cavalues, int(len(val)))
+                    finally:
+                        free(cavalues)
+                    if err != SERVICE_ERROR_NONE:
+                        raise TizenServiceError(err)
+                elif isinstance(val, str):
+                    cvalue = _fruni(val)
+                    err = service_add_extra_data(self._handle, ckey, cvalue)
+                    if err != SERVICE_ERROR_NONE:
+                        raise TizenServiceError(err)
+                else:
+                    log.error("Invalid service error key data. Expecting strings or"
+                              "list of strings. Skipping data for key %s" % key)
 
     def get_matching_apps(self):
         ret = []
-        cdef int err = service_foreach_app_matched(self._service, _service_math_cb, <void*>ret)
+        cdef int err = service_foreach_app_matched(self._handle, _service_math_cb, <void*>ret)
         if err != APP_ERROR_NONE:
             raise TizenServiceError(err)
         return ret
 
 
 cdef class Alarm:
+    cdef int _id
+    def __cinit__(self):
+        self._id = 0
 
-    def __init__(self, id=None):
+    def _set_id(self, id):
         self._id = id
 
     def cancel(self):
@@ -823,7 +854,9 @@ cdef class Alarm:
         cdef err = alarm_get_service(self._id, &service)
         if err != APP_ERROR_NONE:
             raise TizenServiceError(err)
-        return Service(service)
+        srv = Service()
+        srv._set_handle(handle=service)
+        return srv
 
     @property
     def date(self):
@@ -870,13 +903,13 @@ cdef class Alarm:
 
         tm_time = _python_time_to_struct_tm(date)
 
-        if (period and week_flags) or not (period or week_flags):
+        if (period is not None and week_flags) or not (period is not None or week_flags):
             raise TypeError("Please set period or week_flags")
 
-        if period:
+        if period is not None:
             if not isinstance(period, int):
                 raise TypeError("Tizen Alarm requires int type as period value.")
-            err = alarm_schedule_at_date(service._service, &tm_time, period,
+            err = alarm_schedule_at_date(Service._get_handle(service), &tm_time, period,
                                          &alarm_id)
         elif week_flags:
             for v in week_flags:
@@ -886,8 +919,9 @@ cdef class Alarm:
                 _week_flags = list(set(week_flags))
                 for wf in _week_flags:
                     flags = flags | (0x01 << wf)
-                err = alarm_schedule_with_recurrence_week_flag(service._service,
-                        &tm_time, flags, &alarm_id)
+                err = alarm_schedule_with_recurrence_week_flag(
+                            Service._get_handle(service),
+                            &tm_time, flags, &alarm_id)
 
         if err != ALARM_ERROR_NONE:
             raise TizenAlarmError(err)
@@ -895,31 +929,24 @@ cdef class Alarm:
 
 
 cdef tm _python_time_to_struct_tm(time):
+    if not isinstance(time, datetime):
+        raise TypeError('Not a Datetime object!')
     cdef tm ctime
-    ctime.tm_sec = int(time.tm_sec)
-    ctime.tm_min = int(time.tm_min)
-    ctime.tm_hour = int(time.tm_hour)
-    ctime.tm_mday = int(time.tm_mday)
-    ctime.tm_mon = int(time.tm_mon) - 1
-    ctime.tm_year = int(time.tm_year) - 1900
-    ctime.tm_wday = int(time.tm_wday)
-    ctime.tm_yday = int(time.tm_yday)
-    ctime.tm_isdst = int(time.tm_isdta)
+    ctime.tm_sec = time.second
+    ctime.tm_min = time.minute
+    ctime.tm_hour = time.hour
+    ctime.tm_mday = time.day
+    ctime.tm_mon = time.month - 1
+    ctime.tm_year = time.year - 1900
+    ctime.tm_wday = time.weekday()
+    diff = time - datetime(time.year, 1, 1)
+    ctime.tm_yday = diff.days
+    ctime.tm_isdst = 0
     return ctime
 
 
 cdef object _struct_tm_to_python_time(tm ctime):
-    ptime = object()
-    ptime.tm_sec = ctime.tm_sec
-    ptime.tm_min = ctime.tm_min
-    ptime.tm_hour = ctime.tm_hour
-    ptime.tm_mday = ctime.tm_mday
-    ptime.tm_mon = ctime.tm_mon + 1
-    ptime.tm_year = ctime.tm_year + 1900
-    ptime.tm_wday = ctime.tm_wday
-    ptime.tm_yday = ctime.tm_yday
-    ptime.tm_isdst = ctime.tm_isdta
-    return ptime
+    return datetime.fromtimestamp(mktime(ctime))
 
 
 cdef class Notification:
@@ -1042,14 +1069,15 @@ cdef class Notification:
         err = ui_notification_get_service(self._handle, &serv)
         if err != UI_NOTIFICATION_ERROR_NONE:
             raise TizenNotificationError(err)
-        pserv = Service(handle=serv)
-        service_destroy(serv)
+        pserv = Service()
+        pserv._set_handle(handle=serv, clone=False)
         return pserv
 
     @service.setter
     def service(self, value):
         cdef int err
-        err = ui_notification_set_service(self._handle, value._service)
+        err = ui_notification_set_service(self._handle,
+                Service._get_handle(value))
         if err != UI_NOTIFICATION_ERROR_NONE:
             raise TizenNotificationError(err)
         self._service = value
