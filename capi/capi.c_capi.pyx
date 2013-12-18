@@ -163,7 +163,7 @@ def _get_storage_attr(id):
     err = storage_get_type(id, &stype)
     if err != STORAGE_ERROR_NONE:
         raise TizenStorageError(err)
-    info['state'] = STORAGE_TYPES[state]
+    info['state'] = STORAGE_TYPES[stype]
 
     return info
 
@@ -491,42 +491,46 @@ cdef void _storage_state_changed_cb(int storage, storage_state_e state, void
 
 
 cdef bool _storage_device_supported_cb(int storage, storage_type_e type,
-    storage_state_e state, const char *path, void *user_data):
+    storage_state_e state, const char *path, void *user_data) with gil:
     cdef object ret = <object>user_data
     info = _get_storage_attr(storage)
     ret.append(info)
     return True
 
 
-cdef bool _ui_notification_cb(ui_notification_h notification, void *user_data):
+cdef bool _ui_notification_cb(ui_notification_h notification,
+                              void *user_data) with gil:
     cdef object notis = <object>user_data
-    noti = Notification(handle=notification)
+    noti = Notification()
+    noti._set_handle(handle=notification, clone=True, ongoing=None)
     notis.append(noti)
     return True
 
 
-cdef bool _alarm_registered_alarm_cb(int alarm_id, void *user_data):
+cdef bool _alarm_registered_alarm_cb(int alarm_id, void *user_data) with gil:
     cdef object alarms = <object>user_data
     alarm = Alarm()
     alarm._set_id(alarm_id)
     alarms.append(alarm)
     return True
 
-cdef bool _service_math_cb(service_h s, const char *app_id, void *data):
+cdef bool _service_math_cb(service_h s, const char *app_id, void *data) with gil:
     cdef bytes aid = app_id
     cdef object all_ids = <object>data
     all_ids.append(aid)
     return True  # get next matching app_id
 
 
-cdef bool _service_foreach_key_del(service_h handle, const char *key, void *data):
+cdef bool _service_foreach_key_del(service_h handle, const char *key,
+                                   void *data) with gil:
     cdef err = service_remove_extra_data(handle, key)
     if err != SERVICE_ERROR_NONE:
         return False
     return True
 
 
-cdef bool _service_foreach_key(service_h handle, const char *key, void *data):
+cdef bool _service_foreach_key(service_h handle, const char *key,
+                               void *data) with gil:
     cdef int is_extra_data
     cdef int err
     cdef bytes pkey = key
@@ -949,224 +953,203 @@ cdef object _struct_tm_to_python_time(tm ctime):
     return datetime.fromtimestamp(mktime(ctime))
 
 
-cdef class Notification:
-    def __init__(self, ongoing=False, handle=None, noclone=False):
+cdef class Notification(object):
+    cdef ui_notification_h _handle
+    cdef bool _ongoing
+    cdef object _service
+
+    def __init__(self, ongoing=False):
+        self._set_handle(NULL, ongoing)
+
+    cdef int _set_handle(self, ui_notification_h handle, bool ongoing=False,
+                         clone=False) except? 0:
         cdef int err = UI_NOTIFICATION_ERROR_NONE
         cdef ui_notification_h noti
-        if handle:
-            if noclone:
+        if handle != NULL:
+            if not clone:
                 noti = handle
             else:
                 err = ui_notification_clone(&noti, handle)
         else:
+            if self._handle != NULL:
+                ui_notification_destroy(self._handle)
             err = ui_notification_create(bool(ongoing), &noti)
 
         if err != UI_NOTIFICATION_ERROR_NONE:
             raise TizenNotificationError(err)
         self._handle = noti
+        self._ongoing = ongoing
+        self._service = None
 
     def __del__(self):
         ui_notification_destroy(self._handle)
 
-    @property
-    def title(self):
-        cdef int err
-        cdef char *cstr
-        cdef bytes ret
-        if self._title:
-            return self._title
-        err = ui_notification_get_title(self._handle, &cstr)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        try:
-            ret = cstr
-        finally:
-            free(cstr)
-        self._title = ret
-        return ret
+    property title:
+        def __get__(self):
+            cdef int err
+            cdef char *cstr
+            ret = None
+            err = ui_notification_get_title(self._handle, &cstr)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
-    @title.setter
-    def title(self, value):
-        cdef int err
-        cdef char *cstr
-        cstr = _fruni(value)
-        err = ui_notification_set_title(self._handle, cstr)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        self._title = cstr
+        def __set__(self, value):
+            cdef int err
+            cdef char *cstr
+            cstr = _fruni(value)
+            err = ui_notification_set_title(self._handle, cstr)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
 
-    @property
-    def content(self):
-        cdef int err
-        cdef char *cstr
-        cdef bytes ret
-        if self._content:
-            return self._content
-        err = ui_notification_get_content(self._handle, &cstr)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        try:
-            ret = cstr
-        finally:
-            free(cstr)
-        self._content = ret
-        return ret
+    property content:
+        def __get__(self):
+            cdef int err
+            cdef char *cstr
+            ret = None
+            err = ui_notification_get_content(self._handle, &cstr)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
-    @content.setter
-    def content(self, value):
-        cdef int err
-        cdef char *cstr
-        cstr = _fruni(value)
-        err = ui_notification_set_content(self._handle, cstr)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        self._content = cstr
+        def __set__(self, value):
+            cdef int err
+            cdef char *cstr
+            cstr = _fruni(value)
+            err = ui_notification_set_content(self._handle, cstr)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
 
-    @property
-    def icon(self):
-        cdef int err
-        cdef char *cstr
-        cdef bytes ret
-        if self._icon:
-            return self._icon
-        err = ui_notification_get_content(self._handle, &cstr)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        try:
-            ret = cstr
-        finally:
-            free(cstr)
-        self._content = ret
-        return ret
+    property icon:
+        def __get__(self):
+            cdef int err
+            cdef char *cstr
+            ret = None
+            err = ui_notification_get_content(self._handle, &cstr)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
-    @icon.setter
-    def icon(self, value):
-        cdef int err
-        cdef char *cstr
-        cstr = _fruni(value)
-        err = ui_notification_set_icon(self._handle, cstr)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        self._icon = cstr
+        def __set__(self, value):
+            cdef int err
+            cdef char *cstr
+            cstr = _fruni(value)
+            err = ui_notification_set_icon(self._handle, cstr)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
 
-    @property
-    def id(self):
-        cdef int err, cid
-        if self._id:
-            return self._id
-        err = ui_notification_get_id(self._handle, &cid)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        self._id = cid
-        return cid
+    property id:
+        def __get__(self):
+            cdef int err, cid
+            err = ui_notification_get_id(self._handle, &cid)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            return cid
 
-    @property
-    def service(self):
-        cdef int err
-        cdef service_h serv
-        if self._service:
+    property service:
+        def __get__(self):
+            cdef int err
+            cdef service_h serv
+            if self._service:
+                return self._service
+            err = ui_notification_get_service(self._handle, &serv)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            pserv = Service()
+            pserv._set_handle(handle=serv, clone=False)
+            self._service = pserv
             return self._service
-        err = ui_notification_get_service(self._handle, &serv)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        pserv = Service()
-        pserv._set_handle(handle=serv, clone=False)
-        return pserv
 
-    @service.setter
-    def service(self, value):
-        cdef int err
-        err = ui_notification_set_service(self._handle,
-                Service._get_handle(value))
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        self._service = value
+        def __set__(self, value):
+            cdef int err
+            err = ui_notification_set_service(self._handle,
+                    Service._get_handle(value))
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            self._service = value
 
-    @property
-    def time(self):
-        cdef int err
-        cdef tm *ctim
-        if self._time:
-            return self._time
-        err = ui_notification_get_time(self._handle, &ctim)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        try:
-            self._time = _struct_tm_to_python_time(deref(ctim))
-        finally:
-            free(ctim)
-        return self._time
+    property time:
+        def __get__(self):
+            cdef int err
+            cdef tm *ctim
+            ret = None
+            err = ui_notification_get_time(self._handle, &ctim)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            try:
+                ret = _struct_tm_to_python_time(deref(ctim))
+            finally:
+                free(ctim)
+            return ret
 
-    @time.setter
-    def time(self, value):
-        cdef int err
-        cdef tm ctim = _python_time_to_struct_tm(value)
-        err = ui_notification_set_time(self._handle, &ctim)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        self._time = ctim
+        def __set__(self, value):
+            cdef int err
+            cdef tm ctim = _python_time_to_struct_tm(value)
+            err = ui_notification_set_time(self._handle, &ctim)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
 
-    @property
-    def sound(self):
-        cdef int err
-        cdef char *cstr
-        cdef bytes ret
-        if self._sound is None:
-            return self._sound
-        err = ui_notification_get_sound(self._handle, &cstr)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        try:
-            ret = cstr
-        finally:
-            free(cstr)
-        self._sound = ret
-        return ret
+    property sound:
+        def __get__(self):
+            cdef int err
+            cdef char *cstr
+            ret = None
+            err = ui_notification_get_sound(self._handle, &cstr)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            try:
+                ret = _ctouni(cstr)
+            finally:
+                free(cstr)
+            return ret
 
-    @sound.setter
-    def sound(self, value):
-        cdef int err
-        cdef char *cstr
-        cstr = _fruni(value)
-        err = ui_notification_set_sound(self._handle, cstr)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        self._sound = cstr
+        def __set__(self, value):
+            cdef int err
+            cdef char *cstr
+            cstr = _fruni(value)
+            err = ui_notification_set_sound(self._handle, cstr)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
 
-    @property
-    def vibration(self):
-        cdef int err
-        cdef int ret
-        if self._vibration is None:
-            return self._vibration
-        err = ui_notification_get_vibration(self._handle, &ret)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        self._vibration = bool(ret)
-        return self._vibration
+    property vibration:
+        def __get__(self):
+            cdef int err
+            cdef int ret
+            err = ui_notification_get_vibration(self._handle, &ret)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
+            return bool(ret)
 
-    @vibration.setter
-    def vibration(self, value):
-        cdef int err
-        cdef bool vib
-        vib = bool(value)
-        err = ui_notification_set_vibration(self._handle, vib)
-        if err != UI_NOTIFICATION_ERROR_NONE:
-            raise TizenNotificationError(err)
-        self._vibration = vib
+        def __set__(self, value):
+            cdef int err
+            cdef bool vib
+            vib = bool(value)
+            err = ui_notification_set_vibration(self._handle, vib)
+            if err != UI_NOTIFICATION_ERROR_NONE:
+                raise TizenNotificationError(err)
 
-    @property
-    def ongoing(self):
-        cdef int err
-        cdef int ison
-        if self._ongoing is None:
+    property ongoing:
+        def __get__(self):
+            cdef int err
+            cdef int ison
             err = ui_notification_is_ongoing(self._handle, &ison)
             if err != UI_NOTIFICATION_ERROR_NONE:
                 raise TizenNotificationError(err)
-            self._ongoing = bool(ison)
-        return self._ongoing
+            return bool(ison)
 
-    def post(self, title=None, content=None, ):
+    def post(self, title=None, content=None):
         cdef int err
         err = ui_notification_post(self._handle)
         if err != UI_NOTIFICATION_ERROR_NONE:

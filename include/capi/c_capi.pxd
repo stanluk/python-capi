@@ -162,8 +162,11 @@ cdef extern from "app_alarm.h":
     int alarm_schedule_with_recurrence_week_flag(service_h service, tm *date, int week_flag,int *alarm_id)
 
 cdef extern from "app_ui_notification.h":
-    ctypedef struct ui_notification_h:
+
+    ctypedef struct ui_notification_s:
         pass
+
+    ctypedef ui_notification_s * ui_notification_h
 
     ctypedef enum ui_notification_error_e:
         UI_NOTIFICATION_ERROR_NONE
