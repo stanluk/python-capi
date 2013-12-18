@@ -1,0 +1,4 @@
+BUILD:
+
+In order to compile bindings with gbs and tizen repos, Cython rpm is required as an
+extra dependency
